@@ -61,7 +61,7 @@ func setupTestCoverMeta(t *testing.T) *TraceEntry {
 	})
 
 	root := newTraceG(1)
-	root.addCounter(blockRef{FileName: testFileName, Idx: 0})
+	root.addCounter(RegisterFile(testFileName, 1), 0)
 	return &TraceEntry{Name: "dep-resolution", Roots: []*TraceG{root}}
 }
 

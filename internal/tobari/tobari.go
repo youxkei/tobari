@@ -267,25 +267,106 @@ type blockRef struct {
 	Idx      int
 }
 
+// fileMeta is what RegisterFile records about one instrumented file. The
+// counters of a file are addressed by its dense id, so this slice doubles as
+// the id space.
+type fileMeta struct {
+	name      string
+	numBlocks int
+}
+
+var (
+	fileMetas   []fileMeta
+	fileMetasMu sync.RWMutex
+)
+
+// RegisterFile records an instrumented file and returns the id that Trace
+// indexes counters by. It is called from a package-level variable initializer
+// in each instrumented file, so it runs once per file rather than once per
+// executed block, which is the whole point of handing Trace an id instead of
+// the file path.
+func RegisterFile(name string, numBlocks int) int32 {
+	fileMetasMu.Lock()
+	defer fileMetasMu.Unlock()
+
+	fileMetas = append(fileMetas, fileMeta{name: name, numBlocks: numBlocks})
+	return int32(len(fileMetas) - 1)
+}
+
+func fileMetaOf(fileID int32) (fileMeta, bool) {
+	fileMetasMu.RLock()
+	defer fileMetasMu.RUnlock()
+
+	if fileID < 0 || int(fileID) >= len(fileMetas) {
+		return fileMeta{}, false
+	}
+	return fileMetas[fileID], true
+}
+
 type TraceG struct {
-	ID              uint64
-	BlockCounterMap map[blockRef]int
-	Children        []*TraceG
-	mu              sync.RWMutex
+	ID uint64
+	// counters is indexed by file id, and each element by block index within
+	// that file. Both are dense, so counting is a slice store rather than a
+	// map update, and a goroutine pays memory only for the files it enters.
+	counters [][]uint32
+	Children []*TraceG
+	mu       sync.RWMutex
 }
 
 func newTraceG(gid uint64) *TraceG {
+	fileMetasMu.RLock()
+	n := len(fileMetas)
+	fileMetasMu.RUnlock()
+
 	return &TraceG{
-		ID:              gid,
-		BlockCounterMap: make(map[blockRef]int),
+		ID:       gid,
+		counters: make([][]uint32, n),
 	}
 }
 
-func (g *TraceG) addCounter(ref blockRef) {
+func (g *TraceG) addCounter(fileID int32, blockIdx int) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
+	if int(fileID) < len(g.counters) {
+		if s := g.counters[fileID]; s != nil && blockIdx < len(s) {
+			s[blockIdx]++
+			g.mu.Unlock()
+			return
+		}
+	}
+	g.addCounterSlow(fileID, blockIdx)
+	g.mu.Unlock()
+}
 
-	g.BlockCounterMap[ref]++
+// addCounterSlow allocates what the fast path found missing. A goroutine that
+// starts while packages are still initializing sees fewer registered files
+// than exist, so the outer slice has to be able to grow rather than being
+// sized once at creation.
+func (g *TraceG) addCounterSlow(fileID int32, blockIdx int) {
+	if fileID < 0 {
+		return
+	}
+	md, ok := fileMetaOf(fileID)
+	if !ok {
+		return
+	}
+
+	if int(fileID) >= len(g.counters) {
+		grown := make([][]uint32, int(fileID)+1)
+		copy(grown, g.counters)
+		g.counters = grown
+	}
+	s := g.counters[fileID]
+	if blockIdx >= len(s) {
+		size := md.numBlocks
+		if blockIdx >= size {
+			size = blockIdx + 1
+		}
+		grown := make([]uint32, size)
+		copy(grown, s)
+		s = grown
+		g.counters[fileID] = s
+	}
+	s[blockIdx]++
 }
 
 func (g *TraceG) linkG(child *TraceG) {
@@ -304,8 +385,20 @@ func (g *TraceG) blockToCountMap(blockToCountMap map[blockRef]int, visited map[u
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	for ref, count := range g.BlockCounterMap {
-		blockToCountMap[ref] += count
+	for fileID, s := range g.counters {
+		if s == nil {
+			continue
+		}
+		md, ok := fileMetaOf(int32(fileID))
+		if !ok {
+			continue
+		}
+		for idx, count := range s {
+			if count == 0 {
+				continue
+			}
+			blockToCountMap[blockRef{FileName: md.name, Idx: idx}] += int(count)
+		}
 	}
 	for _, child := range g.Children {
 		child.blockToCountMap(blockToCountMap, visited)
@@ -486,15 +579,18 @@ func MaybeTraceChanRange(v any, gid uint64) {
 	}
 }
 
-func Trace(fileName string, pgid, gid uint64, blockIdx, startLine, endLine, startCol, endCol, numStmts int) {
+// Trace counts one execution of one basic block. The instrumented call site
+// passes the file's registered id rather than its path, and nothing beyond the
+// block index: the line and column span and the statement count all come from
+// the metadata that RegisterFile and AddCoverMeta record at init, so passing
+// them per execution would be work the coverprofile does not need.
+func Trace(fileID int32, pgid, gid uint64, blockIdx int) {
 	isEnabledTraceMu.RLock()
 	if !isEnabledTrace {
 		isEnabledTraceMu.RUnlock()
 		return
 	}
 	isEnabledTraceMu.RUnlock()
-
-	ref := blockRef{FileName: fileName, Idx: blockIdx}
 
 	g := getG(gid)
 	if g == nil {
@@ -504,7 +600,7 @@ func Trace(fileName string, pgid, gid uint64, blockIdx, startLine, endLine, star
 			parent.linkG(g)
 		}
 	}
-	g.addCounter(ref)
+	g.addCounter(fileID, blockIdx)
 }
 
 type Metadata struct {
