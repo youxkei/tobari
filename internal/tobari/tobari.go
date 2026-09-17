@@ -14,18 +14,15 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 func EnableCoverageCounting() {
-	isEnabledTraceMu.Lock()
-	isEnabledTrace = true
-	isEnabledTraceMu.Unlock()
+	traceDisabled.Store(false)
 }
 
 func DisableCoverageCounting() {
-	isEnabledTraceMu.Lock()
-	isEnabledTrace = false
-	isEnabledTraceMu.Unlock()
+	traceDisabled.Store(true)
 }
 
 func ClearCounters() {
@@ -405,9 +402,13 @@ func (g *TraceG) blockToCountMap(blockToCountMap map[blockRef]int, visited map[u
 	}
 }
 
+// traceDisabled gates counting, and it is stored inverted so that the zero
+// value means counting is on. Counting is on from process start, and a flag
+// that had to be set to true somewhere in init would leave a window in which
+// blocks run by earlier package initializers went uncounted.
+var traceDisabled atomic.Bool
+
 var (
-	isEnabledTraceMu       sync.RWMutex
-	isEnabledTrace         = true
 	gidFnOnce              sync.Once
 	gidFn                  func() uint64
 	entryMap               map[string]*TraceEntry
@@ -476,12 +477,9 @@ func getBlock(ref blockRef) *Block {
 // When isSend is true, the goroutine is registered as a sender on the channel.
 // When isSend is false (receive), the receiver is linked as a child of all senders.
 func TraceChan(chanID uintptr, gid uint64, isSend bool) {
-	isEnabledTraceMu.RLock()
-	if !isEnabledTrace {
-		isEnabledTraceMu.RUnlock()
+	if traceDisabled.Load() {
 		return
 	}
-	isEnabledTraceMu.RUnlock()
 
 	if chanID == 0 {
 		return
@@ -585,12 +583,9 @@ func MaybeTraceChanRange(v any, gid uint64) {
 // the metadata that RegisterFile and AddCoverMeta record at init, so passing
 // them per execution would be work the coverprofile does not need.
 func Trace(fileID int32, pgid, gid uint64, blockIdx int) {
-	isEnabledTraceMu.RLock()
-	if !isEnabledTrace {
-		isEnabledTraceMu.RUnlock()
+	if traceDisabled.Load() {
 		return
 	}
-	isEnabledTraceMu.RUnlock()
 
 	g := getG(gid)
 	if g == nil {
