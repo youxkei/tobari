@@ -114,7 +114,7 @@ func WriteAllCoverprofile(mode string, w io.Writer) {
 	gMapMu.RLock()
 	defer gMapMu.RUnlock()
 
-	blockToCountMap := make(map[string]int)
+	blockToCountMap := make(map[blockRef]int)
 	for _, g := range gMap {
 		g.blockToCountMap(blockToCountMap, make(map[uint64]struct{}))
 	}
@@ -124,12 +124,12 @@ func WriteAllCoverprofile(mode string, w io.Writer) {
 	maps.Copy(newCoverprofileMap, allCoverprofileMap)
 	allCoverprofileMapMu.RUnlock()
 
-	for bid, count := range blockToCountMap {
-		block := getBlock(bid)
+	for ref, count := range blockToCountMap {
+		block := getBlock(ref)
 		if block == nil {
 			continue
 		}
-		newCoverprofileMap[bid] = &CoverEntry{
+		newCoverprofileMap[blockID(ref.FileName, ref.Idx)] = &CoverEntry{
 			FileName:  block.FileName,
 			StartLine: block.Start.Line,
 			StartCol:  block.Start.Col,
@@ -189,20 +189,20 @@ func (e *CoverEntry) String() string {
 }
 
 func (e *TraceEntry) CoverprofileMap() map[string]*CoverEntry {
-	blockToCountMap := make(map[string]int)
+	blockToCountMap := make(map[blockRef]int)
 	for _, root := range e.Roots {
 		root.blockToCountMap(blockToCountMap, make(map[uint64]struct{}))
 	}
 
 	newCoverprofileMap := make(map[string]*CoverEntry)
 	hitCandidateFuncMap := make(map[*Function]struct{})
-	for bid, count := range blockToCountMap {
-		block := getBlock(bid)
+	for ref, count := range blockToCountMap {
+		block := getBlock(ref)
 		if block == nil {
 			continue
 		}
 		resolveCandidateFuncMap(block.Function, hitCandidateFuncMap)
-		newCoverprofileMap[bid] = &CoverEntry{
+		newCoverprofileMap[blockID(ref.FileName, ref.Idx)] = &CoverEntry{
 			FileName:  block.FileName,
 			StartLine: block.Start.Line,
 			StartCol:  block.Start.Col,
@@ -257,9 +257,19 @@ func setEntry(id string, e *TraceEntry) {
 	entryMapMu.Unlock()
 }
 
+// blockRef identifies one basic block. Trace builds a blockRef for every block
+// it is called from, which is why the fields are kept apart rather than joined
+// into the "<file>:<idx>" string that the coverprofile is keyed by: formatting
+// that string costs more than the counting it feeds, it allocates, and hashing
+// it as a map key runs over the whole file path.
+type blockRef struct {
+	FileName string
+	Idx      int
+}
+
 type TraceG struct {
 	ID              uint64
-	BlockCounterMap map[string]int
+	BlockCounterMap map[blockRef]int
 	Children        []*TraceG
 	mu              sync.RWMutex
 }
@@ -267,15 +277,15 @@ type TraceG struct {
 func newTraceG(gid uint64) *TraceG {
 	return &TraceG{
 		ID:              gid,
-		BlockCounterMap: make(map[string]int),
+		BlockCounterMap: make(map[blockRef]int),
 	}
 }
 
-func (g *TraceG) addCounter(blockID string) {
+func (g *TraceG) addCounter(ref blockRef) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	g.BlockCounterMap[blockID]++
+	g.BlockCounterMap[ref]++
 }
 
 func (g *TraceG) linkG(child *TraceG) {
@@ -285,7 +295,7 @@ func (g *TraceG) linkG(child *TraceG) {
 	g.Children = append(g.Children, child)
 }
 
-func (g *TraceG) blockToCountMap(blockToCountMap map[string]int, visited map[uint64]struct{}) {
+func (g *TraceG) blockToCountMap(blockToCountMap map[blockRef]int, visited map[uint64]struct{}) {
 	if _, ok := visited[g.ID]; ok {
 		return
 	}
@@ -294,8 +304,8 @@ func (g *TraceG) blockToCountMap(blockToCountMap map[string]int, visited map[uin
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	for blockID, count := range g.BlockCounterMap {
-		blockToCountMap[blockID] += count
+	for ref, count := range g.BlockCounterMap {
+		blockToCountMap[ref] += count
 	}
 	for _, child := range g.Children {
 		child.blockToCountMap(blockToCountMap, visited)
@@ -311,7 +321,7 @@ var (
 	entryMapMu             sync.RWMutex
 	gMap                   map[uint64]*TraceG
 	gMapMu                 sync.RWMutex
-	blockMap               map[string]*Block
+	blockMap               map[blockRef]*Block
 	blockMapMu             sync.RWMutex
 	mdMu                   sync.RWMutex
 	mds                    []*Metadata
@@ -361,11 +371,11 @@ func setG(gid uint64, g *TraceG) {
 	gMapMu.Unlock()
 }
 
-func getBlock(blockID string) *Block {
+func getBlock(ref blockRef) *Block {
 	blockMapMu.RLock()
 	defer blockMapMu.RUnlock()
 
-	return blockMap[blockID]
+	return blockMap[ref]
 }
 
 // TraceChan records a channel operation for cross-goroutine coverage linking.
@@ -484,7 +494,7 @@ func Trace(fileName string, pgid, gid uint64, blockIdx, startLine, endLine, star
 	}
 	isEnabledTraceMu.RUnlock()
 
-	blockIDStr := blockID(fileName, blockIdx)
+	ref := blockRef{FileName: fileName, Idx: blockIdx}
 
 	g := getG(gid)
 	if g == nil {
@@ -494,7 +504,7 @@ func Trace(fileName string, pgid, gid uint64, blockIdx, startLine, endLine, star
 			parent.linkG(g)
 		}
 	}
-	g.addCounter(blockIDStr)
+	g.addCounter(ref)
 }
 
 type Metadata struct {
@@ -554,7 +564,7 @@ func initMap() {
 
 		entryMap = make(map[string]*TraceEntry)
 		gMap = make(map[uint64]*TraceG)
-		blockMap = make(map[string]*Block)
+		blockMap = make(map[blockRef]*Block)
 		funcMap = make(map[string]*Function)
 		allCoverprofileMap = make(map[string]*CoverEntry)
 		chanGIDMap = make(map[uintptr]*chanLinks)
@@ -621,7 +631,7 @@ func decodeRawMetas() {
 					block.Function = fn
 
 					blockMapMu.Lock()
-					blockMap[bid] = block
+					blockMap[blockRef{FileName: md.FileName, Idx: block.Idx}] = block
 					blockMapMu.Unlock()
 
 					allCoverprofileMap[bid] = &CoverEntry{
@@ -771,15 +781,15 @@ func CollectCoverReportData() *CoverReportData {
 
 	// Build allcounts from all goroutines.
 	gMapMu.RLock()
-	blockToCountMap := make(map[string]int)
+	blockToCountMap := make(map[blockRef]int)
 	for _, g := range gMap {
 		g.blockToCountMap(blockToCountMap, make(map[uint64]struct{}))
 	}
 	gMapMu.RUnlock()
 
 	allCounts := make([]int, len(all))
-	for bid, count := range blockToCountMap {
-		block := getBlock(bid)
+	for ref, count := range blockToCountMap {
+		block := getBlock(ref)
 		if block == nil {
 			continue
 		}
@@ -962,7 +972,7 @@ func EncodeCounters() ([]byte, error) {
 	defer mdMu.RUnlock()
 	defer gMapMu.RUnlock()
 
-	blockToCountMap := make(map[string]int)
+	blockToCountMap := make(map[blockRef]int)
 	for _, g := range gMap {
 		g.blockToCountMap(blockToCountMap, make(map[uint64]struct{}))
 	}
@@ -981,8 +991,7 @@ func EncodeCounters() ([]byte, error) {
 
 			// Add actual counter values at FirstCtrOffset onwards
 			for _, block := range fn.Blocks {
-				bid := blockID(block.FileName, block.Idx)
-				cnt := blockToCountMap[bid]
+				cnt := blockToCountMap[blockRef{FileName: block.FileName, Idx: block.Idx}]
 				// For "set" mode, use 1 if counter > 0, else 0
 				var ctrVal uint32 = 0
 				if cnt > 0 {
