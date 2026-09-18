@@ -167,7 +167,7 @@ func resolveTargetTobariVersion() *version.Version {
 				}
 				return &version.Version{LocalPath: localPath}
 			}
-			return &version.Version{Ver: rep.New.Version}
+			return &version.Version{Ver: rep.New.Version, ReplacePath: rep.New.Path}
 		}
 	}
 
