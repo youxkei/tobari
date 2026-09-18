@@ -34,6 +34,7 @@ func buildPackages(workDir string, ver *version.Version, lang string, opts Build
 	// The temp app's go.mod ensures the correct version of tobari is resolved:
 	//   - Released version: require github.com/goccy/tobari <version>
 	//   - Development:      replace github.com/goccy/tobari => <local path>
+	//   - Forked module:    require plus replace onto the replacement module
 	//
 	// Using Go's build cache paths directly (instead of building separate archives)
 	// guarantees that compile and link steps always reference the same package files,
@@ -100,6 +101,16 @@ func createGoMod(path string, ver *version.Version, lang string) error {
 		if err := f.AddRequire("github.com/goccy/tobari", ver.Ver); err != nil {
 			return fmt.Errorf("failed to add require directive: %w", err)
 		}
+		if ver.ReplacePath != "" {
+			// The version belongs to the replacement's repository, so the
+			// require above cannot be resolved on its own: asking the proxy
+			// for that version of github.com/goccy/tobari finds no such
+			// revision. The replace has to come along for this module to
+			// resolve to the same tobari the outer build resolves to.
+			if err := f.AddReplace("github.com/goccy/tobari", "", ver.ReplacePath, ver.Ver); err != nil {
+				return fmt.Errorf("failed to add replace directive: %w", err)
+			}
+		}
 	}
 	data, err := f.Format()
 	if err != nil {
@@ -123,4 +134,3 @@ func main() {}
 	}
 	return nil
 }
-

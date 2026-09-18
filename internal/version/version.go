@@ -22,6 +22,12 @@ var ver string
 type Version struct {
 	Ver       string
 	LocalPath string
+	// ReplacePath is the module path tobari has been replaced with, when the
+	// main module replaces it with another module rather than a directory. The
+	// path is kept beside Ver because a version alone cannot be resolved: the
+	// version belongs to the replacement's repository, not to
+	// github.com/goccy/tobari.
+	ReplacePath string
 }
 
 func (v *Version) ID() string {
@@ -29,6 +35,13 @@ func (v *Version) ID() string {
 		sha := sha256.Sum256([]byte(v.LocalPath))
 		hash := hex.EncodeToString(sha[:])
 		return string(hash[:7])
+	}
+	if v.ReplacePath != "" {
+		// Two modules can carry the same version string, so the path has to
+		// enter the id as well or a fork would reuse whatever the upstream
+		// version left in the cache.
+		sha := sha256.Sum256([]byte(v.ReplacePath + "@" + v.Ver))
+		return hex.EncodeToString(sha[:])[:7]
 	}
 	return v.Ver
 }
