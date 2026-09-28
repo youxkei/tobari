@@ -21,6 +21,30 @@ func TestTraceSameBlockDoesNotAllocate(t *testing.T) {
 	}
 }
 
+// An instrumented package calls RegisterFile from its variable initializers
+// and does not import this package, so the call can land before this package's
+// own variables are initialized. RegisterFile has to work from the zero value.
+func TestRegisterFileBeforePackageInit(t *testing.T) {
+	fileMetasMu.Lock()
+	savedMetas, savedIDs := fileMetas, fileIDs
+	fileMetas, fileIDs = nil, nil
+	fileMetasMu.Unlock()
+	t.Cleanup(func() {
+		fileMetasMu.Lock()
+		fileMetas, fileIDs = savedMetas, savedIDs
+		fileMetasMu.Unlock()
+	})
+
+	a := RegisterFile("a.go", 3)
+	b := RegisterFile("b.go", 5)
+	if a == b {
+		t.Fatalf("distinct files got the same id %d", a)
+	}
+	if again := RegisterFile("a.go", 3); again != a {
+		t.Fatalf("registering a.go again gave id %d, want %d", again, a)
+	}
+}
+
 // BenchmarkTraceSameBlock measures the cost of hitting a single instrumented
 // block repeatedly from one goroutine, which is what a hot loop in an
 // instrumented program does.

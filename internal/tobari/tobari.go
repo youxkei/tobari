@@ -276,9 +276,14 @@ type fileMeta struct {
 	numBlocks int
 }
 
+// None of these has an initializer. RegisterFile is called from variable
+// initializers of instrumented packages, which reach it through go:linkname
+// and so do not import this package: Go may initialize them before this one.
+// A map literal here would still be nil when they write to it, and an
+// initializer that ran after them would replace what they had registered.
 var (
 	fileMetas   []fileMeta
-	fileIDs     = map[string]int32{}
+	fileIDs     map[string]int32
 	fileMetasMu sync.RWMutex
 )
 
@@ -302,6 +307,9 @@ func RegisterFile(name string, numBlocks int) int32 {
 	}
 	id := int32(len(fileMetas))
 	fileMetas = append(fileMetas, fileMeta{name: name, numBlocks: numBlocks})
+	if fileIDs == nil {
+		fileIDs = make(map[string]int32)
+	}
 	fileIDs[name] = id
 	return id
 }
