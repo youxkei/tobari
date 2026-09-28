@@ -11,8 +11,9 @@ import (
 // goroutine has already recorded must not allocate.
 func TestTraceSameBlockDoesNotAllocate(t *testing.T) {
 	ClearCounters()
+	fileID := RegisterFile("github.com/goccy/tobari/example/pkg/file.go", 64)
 	trace := func() {
-		Trace("github.com/goccy/tobari/example/pkg/file.go", 0, 1, 42, 10, 12, 2, 3, 1)
+		Trace(fileID, 0, 1, 42)
 	}
 	trace()
 	if allocs := testing.AllocsPerRun(1000, trace); allocs != 0 {
@@ -25,12 +26,13 @@ func TestTraceSameBlockDoesNotAllocate(t *testing.T) {
 // instrumented program does.
 func BenchmarkTraceSameBlock(b *testing.B) {
 	ClearCounters()
+	fileID := RegisterFile("github.com/goccy/tobari/example/pkg/file.go", 64)
 	b.ReportAllocs()
 	var before runtime.MemStats
 	runtime.ReadMemStats(&before)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		Trace("github.com/goccy/tobari/example/pkg/file.go", 0, 1, 42, 10, 12, 2, 3, 1)
+		Trace(fileID, 0, 1, 42)
 	}
 	b.StopTimer()
 	var after runtime.MemStats
